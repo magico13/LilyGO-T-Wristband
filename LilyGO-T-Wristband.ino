@@ -35,6 +35,8 @@
 #define LED_PIN             4
 #define CHARGE_PIN          32
 
+#define NUM_FUNCS           4 //number of different functions to switch between when pressing button
+
 extern MPU9250 IMU;
 
 TFT_eSPI tft = TFT_eSPI();  // Invoke library, pins defined in User_Setup.h
@@ -48,8 +50,7 @@ bool otaStart = false;
 bool otaSetup = false;
 
 uint8_t func_select = 0;
-uint8_t num_funcs = 3; //number of different functions to switch between when pressing button
-uint8_t omm = 99;
+uint8_t orig_mm = 99;
 uint8_t xcolon = 0;
 uint32_t targetTime = 0;       // for next 1 second timeout
 uint32_t colour = 0;
@@ -186,7 +187,7 @@ void setupOTA()
         targetTime = millis() + 1000;
         tft.fillScreen(TFT_BLACK);
         tft.setTextDatum(TL_DATUM);
-        omm = 99;
+        orig_mm = 99;
     });
 
     ArduinoOTA.begin();
@@ -293,7 +294,7 @@ void Show_Time()
         ss = datetime.second;
         // Serial.printf("hh:%d mm:%d ss:%d\n", hh, mm, ss);
         targetTime = millis() + 1000;
-        if (ss == 0 || initial) {
+        if (ss == 0 || initial) { //first draw or new minute
             initial = 0;
             //if wifi connected, check time with ntp
             if (WiFi.status() == WL_CONNECTED)
@@ -337,7 +338,7 @@ void Show_Time()
         // Update digital time
         uint8_t xpos = 6;
         uint8_t ypos = 0;
-        if (omm != mm) { // Only redraw every minute to minimise flicker
+        if (orig_mm != mm) { // Only redraw every minute to minimise flicker
             // Uncomment ONE of the next 2 lines, using the ghost image demonstrates text overlay as time is drawn over it
             tft.setTextColor(0x39C4, TFT_BLACK);  // Leave a 7 segment ghost image, comment out next line!
             //tft.setTextColor(TFT_BLACK, TFT_BLACK); // Set font colour to black to wipe image
@@ -345,7 +346,7 @@ void Show_Time()
             // Font 7 only contains characters [space] 0 1 2 3 4 5 6 7 8 9 0 : .
             tft.drawString("88:88", xpos, ypos, 7); // Overwrite the text to clear it
             tft.setTextColor(0xFBE0, TFT_BLACK); // Orange
-            omm = mm;
+            orig_mm = mm;
 
             if (hh < 10) xpos += tft.drawChar('0', xpos, ypos, 7);
             xpos += tft.drawNumber(hh, xpos, ypos, 7);
@@ -491,9 +492,9 @@ void loop()
                 initial = 1;
                 targetTime = millis() + 1000;
                 tft.fillScreen(TFT_BLACK);
-                omm = 99;
+                orig_mm = 99;
                 func_select++;
-                func_select %= num_funcs;
+                func_select %= NUM_FUNCS;
             }
             else //long press
             {
@@ -508,10 +509,13 @@ void loop()
     case 0:
         Show_Time();
         break;
-     case 1:
+    case 1:
         Show_WiFi_Scan();
         break;
-    case 2:
+    case 2: 
+        Show_IMU();
+        break;
+    case 3:
         Go_To_Sleep();
         break;
     default:
