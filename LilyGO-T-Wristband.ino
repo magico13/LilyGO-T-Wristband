@@ -45,6 +45,7 @@ char buff[256];
 bool rtcIrq = false;
 bool initial = 1;
 bool otaStart = false;
+bool otaSetup = false;
 
 uint8_t func_select = 0;
 uint8_t num_funcs = 3; //number of different functions to switch between when pressing button
@@ -121,9 +122,10 @@ void setupWiFi()
 {
 #ifdef ARDUINO_OTA_UPDATE
     //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
+    WiFi.begin(); //try to connect to the last used network
     wifiManager.setAPCallback(configModeCallback);
     wifiManager.setBreakAfterConfig(true);          // Without this saveConfigCallback does not get fired
-    wifiManager.autoConnect("T-Wristband"); //TODO: switch off of auto since we can operate without wifi, provide way to get into wifi config via button press
+    //wifiManager.autoConnect("T-Wristband"); //TODO: switch off of auto since we can operate without wifi, provide way to get into wifi config via button press
 #endif
 }
 
@@ -188,6 +190,7 @@ void setupOTA()
     });
 
     ArduinoOTA.begin();
+    otaSetup = true;
 #endif
 }
 
@@ -223,6 +226,9 @@ void setup(void)
 {
     Serial.begin(115200);
 
+    //don't use bluetooth (for now)
+    btStop(); 
+
     tft.init();
     tft.setRotation(1);
     tft.setSwapBytes(true);
@@ -232,15 +238,20 @@ void setup(void)
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
 
+    Serial.println("Setup RTC");
     setupRTC();
 
+    Serial.println("Setup MPU");
     setupMPU9250();
 
+    Serial.println("Setup ADC");
     setupADC();
 
+    Serial.println("Setup WiFi");
     setupWiFi();
 
-    setupOTA();
+    //Serial.println("Setup OTA");
+    //setupOTA();
 
     tft.fillScreen(TFT_BLACK);
 
@@ -263,6 +274,7 @@ void setup(void)
     if (digitalRead(CHARGE_PIN) == LOW) {
         charge_indication = true;
     }
+    Serial.println("Setup Complete");
 }
 
 String getVoltage()
@@ -299,6 +311,11 @@ void Show_Time()
                     mm = datetime.minute;
                     ss = datetime.second;
                 }
+            }
+            else
+            {
+                //not connected, may as well just turn it off
+                WiFi.mode(WIFI_OFF);
             }
 
             tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -420,7 +437,15 @@ void Go_To_Sleep()
 void loop()
 {
 #ifdef ARDUINO_OTA_UPDATE
-    ArduinoOTA.handle();
+    if (otaSetup)
+    {
+        ArduinoOTA.handle();
+    }
+    else if (WiFi.status() == WL_CONNECTED)
+    {
+        //wifi but OTA not initialized
+        setupOTA();
+    }
 #endif
 
     //! If OTA starts, skip the following operation
@@ -437,30 +462,45 @@ void loop()
     }
 
 
-    if (digitalRead(TP_PIN_PIN) == HIGH) {
-        if (!pressed) {
-            initial = 1;
-            targetTime = millis() + 1000;
-            tft.fillScreen(TFT_BLACK);
-            omm = 99;
-            func_select++;
-            func_select %= num_funcs;
+    if (digitalRead(TP_PIN_PIN) == HIGH) 
+    {
+        if (!pressed) 
+        {
+            pressed = true;
+            pressedTime = millis();
+        }
+            //     tft.fillScreen(TFT_BLACK);
+            //     tft.drawString("Reset WiFi Setting",  20, tft.height() / 2 );
+            //     delay(3000);
+            //     wifiManager.resetSettings();
+            //     wifiManager.erase(true);
+            //     esp_restart();
+    } else {
+        if (pressed)
+        {
+            //button released
+            uint32_t duration = millis() - pressedTime;
             digitalWrite(LED_PIN, HIGH);
             delay(100);
             digitalWrite(LED_PIN, LOW);
-            pressed = true;
-            pressedTime = millis();
-        } else {
-            if (millis() - pressedTime > 3000) {
+
+            if (duration < 50) //too short, ignore
+            { }
+            else if (duration < 1000) //short press
+            {
+                initial = 1;
+                targetTime = millis() + 1000;
                 tft.fillScreen(TFT_BLACK);
-                tft.drawString("Reset WiFi Setting",  20, tft.height() / 2 );
-                delay(3000);
-                wifiManager.resetSettings();
-                wifiManager.erase(true);
-                esp_restart();
+                omm = 99;
+                func_select++;
+                func_select %= num_funcs;
+            }
+            else //long press
+            {
+                initial = 1;
+                wifiManager.startConfigPortal("T-Wristband");
             }
         }
-    } else {
         pressed = false;
     }
 
