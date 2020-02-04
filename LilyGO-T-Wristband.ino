@@ -35,7 +35,8 @@
 #define LED_PIN             4
 #define CHARGE_PIN          32
 
-#define NUM_FUNCS           4 //number of different functions to switch between when pressing button
+#define NUM_FUNCS           3 //number of different functions to switch between when pressing button
+#define NUM_DEBUG           5 //number of different debug functions
 
 extern MPU9250 IMU;
 
@@ -54,6 +55,7 @@ uint8_t orig_mm = 99;
 uint8_t xcolon = 0;
 uint32_t targetTime = 0;       // for next 1 second timeout
 uint32_t colour = 0;
+uint8_t debugSelect = 0;
 int vref = 1100;
 
 bool pressed = false;
@@ -126,6 +128,7 @@ void setupWiFi()
     WiFi.begin(); //try to connect to the last used network
     wifiManager.setAPCallback(configModeCallback);
     wifiManager.setBreakAfterConfig(true);          // Without this saveConfigCallback does not get fired
+    wifiManager.setTimeout(120); //set a two minute timeout for wifi config
     //wifiManager.autoConnect("T-Wristband"); //TODO: switch off of auto since we can operate without wifi, provide way to get into wifi config via button press
 #endif
 }
@@ -234,7 +237,7 @@ void setup(void)
     tft.setRotation(1);
     tft.setSwapBytes(true);
     //tft.pushImage(0, 0,  160, 80, ttgo);
-    tft.fillScreen(TFT_BLACK);
+    //tft.fillScreen(TFT_BLACK);
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
@@ -296,24 +299,8 @@ void Show_Time()
         targetTime = millis() + 1000;
         if (ss == 0 || initial) { //first draw or new minute
             initial = 0;
-            //if wifi connected, check time with ntp
-            if (WiFi.status() == WL_CONNECTED)
-            {
-                configTime(-18000, 3600, "pool.ntp.org");
-                struct tm timeinfo;
-                if (getLocalTime(&timeinfo))
-                {
-                    //update rtc
-                    rtc.setDateTime((uint16_t)timeinfo.tm_year, (uint8_t)timeinfo.tm_mon, (uint8_t)timeinfo.tm_mday,
-                                    (uint8_t)timeinfo.tm_hour, (uint8_t)timeinfo.tm_min, (uint8_t)timeinfo.tm_sec);
-                    Serial.println("Time updated from NTP");
-                    datetime = rtc.getDateTime();
-                    hh = datetime.hour;
-                    mm = datetime.minute;
-                    ss = datetime.second;
-                }
-            }
-            else
+            //if wifi not connected turn off to save power
+            if (WiFi.status() != WL_CONNECTED)
             {
                 //not connected, may as well just turn it off
                 WiFi.mode(WIFI_OFF);
@@ -421,6 +408,80 @@ void Show_IMU()
     delay(200);
 }
 
+void Show_Debug_Menu()
+{
+    if (initial)
+    {
+        initial = 0;
+        tft.setTextColor(TFT_YELLOW);
+        //tft.fillScreen(TFT_BLACK);
+        //0: exit
+        //1: Config WiFi
+        //2: Scan
+        //3 : IMU debug
+        //4: RTC Sync
+        tft.drawString("Exit", 8, 0);
+        tft.drawString("WiFi Config", 8, 16);
+        tft.drawString("WiFi Scan", 8, 32);
+        tft.drawString("IMU Stats", 8, 48);
+        tft.drawString("RTC Sync", 8, 64);
+        uint8_t arrowY = 16*debugSelect;
+        tft.drawString(">", 0, arrowY);
+    }
+    //tft.fillRect(0, 0, 8, 64, TFT_BLACK);
+}
+
+void Show_Debug_Item()
+{
+    switch (debugSelect) 
+    {
+        case 1:
+            wifiManager.startConfigPortal("T-Wristband");
+            func_select = 0;
+            initial = 1;
+            break;
+        case 2:
+            Show_WiFi_Scan();
+            break;
+        case 3:
+            Show_IMU();
+            break;
+        case 4:
+            Sync_RTC();
+            break;
+        default:
+            debugSelect = 0;
+            break;
+    }
+}
+
+void Sync_RTC()
+{
+    if (initial)
+    {
+        initial = 0;
+        //if wifi connected, check time with ntp
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            configTime(-18000, 3600, "pool.ntp.org");
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo))
+            {
+                //update rtc
+                rtc.syncToRtc();
+                // rtc.setDateTime((uint16_t)timeinfo.tm_year, (uint8_t)timeinfo.tm_mon, (uint8_t)timeinfo.tm_mday,
+                //                 (uint8_t)timeinfo.tm_hour, (uint8_t)timeinfo.tm_min, (uint8_t)timeinfo.tm_sec);
+                Serial.println("Time updated from NTP");
+                tft.drawString("Time Sync Complete", 16, 36);
+            }
+        }
+        else
+        {
+            tft.drawString("No WiFi Connection", 8, 36);
+        }
+    }
+}
+
 void Go_To_Sleep()
 {
     //tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -490,16 +551,49 @@ void loop()
             else if (duration < 1000) //short press
             {
                 initial = 1;
+                if (func_select == 0)
+                {
+                    //show time
+                    Go_To_Sleep();
+                }
+                else if (func_select == 1)
+                {
+                    //showing debug, select another debug item
+                    debugSelect++;
+                    debugSelect %= NUM_DEBUG;
+                }
+                else
+                {
+                    func_select = 0;
+                }
                 targetTime = millis() + 1000;
                 tft.fillScreen(TFT_BLACK);
                 orig_mm = 99;
-                func_select++;
-                func_select %= NUM_FUNCS;
             }
             else //long press
             {
                 initial = 1;
-                wifiManager.startConfigPortal("T-Wristband");
+                if (func_select != 1)
+                {
+                    debugSelect = 0;
+                    func_select++;
+                    func_select %= NUM_FUNCS;
+                }
+                else
+                {
+                    //select the item
+                    if (debugSelect == 0)
+                    { //exit back to time
+                        func_select = 0;
+                    }
+                    else
+                    { //show debug item
+                        func_select = 2;
+                    }
+                }
+                targetTime = millis() + 1000;
+                tft.fillScreen(TFT_BLACK);
+                orig_mm = 99;
             }
         }
         pressed = false;
@@ -510,13 +604,15 @@ void loop()
         Show_Time();
         break;
     case 1:
-        Show_WiFi_Scan();
+        //Show_WiFi_Scan();
+        Show_Debug_Menu();
         break;
     case 2: 
-        Show_IMU();
+        Show_Debug_Item();
+        //Show_IMU();
         break;
     case 3:
-        Go_To_Sleep();
+        //Go_To_Sleep();
         break;
     default:
         break;
