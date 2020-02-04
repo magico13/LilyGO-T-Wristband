@@ -35,6 +35,9 @@
 #define LED_PIN             4
 #define CHARGE_PIN          32
 
+#define DST_OFFSET          3600 //1 hour
+#define TZ_OFFSET           -18000 //UTC-5
+
 #define NUM_FUNCS           3 //number of different functions to switch between when pressing button
 #define NUM_DEBUG           5 //number of different debug functions
 
@@ -218,7 +221,7 @@ void setupRTC()
 {
     rtc.begin(Wire);
     //Check if the RTC clock matches, if not, use compile time
-    rtc.check();
+    //rtc.check();
 
     RTC_Date datetime = rtc.getDateTime();
     hh = datetime.hour;
@@ -418,7 +421,7 @@ void Show_Debug_Menu()
         //0: exit
         //1: Config WiFi
         //2: Scan
-        //3 : IMU debug
+        //3: IMU debug
         //4: RTC Sync
         tft.drawString("Exit", 8, 0);
         tft.drawString("WiFi Config", 8, 16);
@@ -463,7 +466,7 @@ void Sync_RTC()
         //if wifi connected, check time with ntp
         if (WiFi.status() == WL_CONNECTED)
         {
-            configTime(-18000, 3600, "pool.ntp.org");
+            configTime(TZ_OFFSET, DST_OFFSET, "pool.ntp.org");
             struct tm timeinfo;
             if (getLocalTime(&timeinfo))
             {
