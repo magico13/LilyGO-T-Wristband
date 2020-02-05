@@ -37,6 +37,7 @@
 
 #define DST_OFFSET          3600 //1 hour
 #define TZ_OFFSET           -18000 //UTC-5
+#define IDLE_TIMEOUT        30000 //30 seconds
 
 #define NUM_FUNCS           3 //number of different functions to switch between when pressing button
 #define NUM_DEBUG           5 //number of different debug functions
@@ -52,6 +53,9 @@ bool rtcIrq = false;
 bool initial = 1;
 bool otaStart = false;
 bool otaSetup = false;
+bool delayedSetup = false;
+bool wifiConnected = false;
+bool wifiStateChanged = false;
 
 uint8_t func_select = 0;
 uint8_t orig_mm = 99;
@@ -231,31 +235,43 @@ void setupRTC()
 
 void setup(void)
 {
+    uint32_t start = millis();
     Serial.begin(115200);
-
+    Serial.print("Start: ");
+    Serial.println(start);
     //don't use bluetooth (for now)
-    btStop(); 
+    btStop();
+    Serial.print("BT Stop: ");
+    Serial.println(millis());
 
     tft.init();
     tft.setRotation(1);
     tft.setSwapBytes(true);
     //tft.pushImage(0, 0,  160, 80, ttgo);
     //tft.fillScreen(TFT_BLACK);
+    Serial.print("TFT: ");
+    Serial.println(millis());
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
 
-    Serial.println("Setup RTC");
+    Serial.print("Wire: ");
+    Serial.println(millis());
+
     setupRTC();
+    Serial.print("RTC: ");
+    Serial.println(millis());
 
-    Serial.println("Setup MPU");
-    setupMPU9250();
+    //Serial.print("MPU: ");
+    //Serial.println(millis());
 
-    Serial.println("Setup ADC");
     setupADC();
+    Serial.print("ADC: ");
+    Serial.println(millis());
 
-    Serial.println("Setup WiFi");
     setupWiFi();
+    Serial.print("WiFi: ");
+    Serial.println(millis());
 
     //Serial.println("Setup OTA");
     //setupOTA();
@@ -264,7 +280,7 @@ void setup(void)
 
     tft.setTextColor(TFT_YELLOW, TFT_BLACK); // Note: the new fonts do not draw the background colour
 
-    targetTime = millis() + 1000;
+    //targetTime = millis() + 1000;
 
     pinMode(TP_PIN_PIN, INPUT);
     //! Must be set to pull-up output mode in order to wake up in deep sleep mode
@@ -281,7 +297,9 @@ void setup(void)
     if (digitalRead(CHARGE_PIN) == LOW) {
         charge_indication = true;
     }
-    Serial.println("Setup Complete");
+    Serial.print("Setup Complete: ");
+    Serial.println(millis());
+    pressedTime = millis();
 }
 
 String getVoltage()
@@ -293,7 +311,19 @@ String getVoltage()
 
 void Show_Time()
 {
-    if (targetTime < millis()) {
+    if (wifiStateChanged || initial)
+    {
+        //show the current ip in bottom left
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.fillRect(8, 70, 80, 10, TFT_BLACK);
+        tft.setCursor(8, 70);
+        if (wifiConnected)
+            tft.print(WiFi.localIP());
+        else
+            tft.print("No WiFi");
+    }
+
+    if (targetTime < millis() || initial) {
         RTC_Date datetime = rtc.getDateTime();
         hh = datetime.hour;
         mm = datetime.minute;
@@ -302,23 +332,9 @@ void Show_Time()
         targetTime = millis() + 1000;
         if (ss == 0 || initial) { //first draw or new minute
             initial = 0;
-            //if wifi not connected turn off to save power
-            if (WiFi.status() != WL_CONNECTED)
-            {
-                //not connected, may as well just turn it off
-                WiFi.mode(WIFI_OFF);
-            }
-
             tft.setTextColor(TFT_GREEN, TFT_BLACK);
             tft.setCursor (8, 60);
-            tft.print(__DATE__); // This uses the standard ADAFruit small font
-
-            //show the current ip in bottom left
-            tft.setCursor(8, 70);
-            if (WiFi.status() == WL_CONNECTED)
-                tft.print(WiFi.localIP());
-            else
-                tft.print("No WiFi");
+            tft.print(rtc.formatDateTime(PCF_TIMEFORMAT_YYYY_MM_DD)); // This uses the standard ADAFruit small font
         }
 
         tft.setTextColor(TFT_BLUE, TFT_BLACK);
@@ -417,19 +433,18 @@ void Show_Debug_Menu()
     {
         initial = 0;
         tft.setTextColor(TFT_YELLOW);
-        //tft.fillScreen(TFT_BLACK);
         //0: exit
         //1: Config WiFi
         //2: Scan
         //3: IMU debug
         //4: RTC Sync
-        tft.drawString("Exit", 8, 0);
-        tft.drawString("WiFi Config", 8, 16);
-        tft.drawString("WiFi Scan", 8, 32);
-        tft.drawString("IMU Stats", 8, 48);
-        tft.drawString("RTC Sync", 8, 64);
-        uint8_t arrowY = 16*debugSelect;
-        tft.drawString(">", 0, arrowY);
+        uint8_t yPos = 0;
+        tft.drawString("Exit", 8, yPos++*16);
+        tft.drawString("WiFi Scan", 8, yPos++*16);
+        tft.drawString("IMU Stats", 8, yPos++*16);
+        tft.drawString("WiFi Config", 8, yPos++*16);
+        tft.drawString("RTC Sync", 8, yPos++*16);
+        tft.drawString(">", 0, 16*debugSelect);
     }
     //tft.fillRect(0, 0, 8, 64, TFT_BLACK);
 }
@@ -439,15 +454,15 @@ void Show_Debug_Item()
     switch (debugSelect) 
     {
         case 1:
+            Show_WiFi_Scan();
+            break;
+        case 2:
+            Show_IMU();
+            break;
+        case 3:
             wifiManager.startConfigPortal("T-Wristband");
             func_select = 0;
             initial = 1;
-            break;
-        case 2:
-            Show_WiFi_Scan();
-            break;
-        case 3:
-            Show_IMU();
             break;
         case 4:
             Sync_RTC();
@@ -464,7 +479,7 @@ void Sync_RTC()
     {
         initial = 0;
         //if wifi connected, check time with ntp
-        if (WiFi.status() == WL_CONNECTED)
+        if (wifiConnected)
         {
             configTime(TZ_OFFSET, DST_OFFSET, "pool.ntp.org");
             struct tm timeinfo;
@@ -499,6 +514,19 @@ void Go_To_Sleep()
     esp_deep_sleep_start();
 }
 
+void Update_WiFi_State()
+{
+    bool connected = WiFi.isConnected();
+    //Serial.println(connected);
+    wifiStateChanged = (connected != wifiConnected);
+    wifiConnected = connected;
+    if (wifiStateChanged)
+    {
+        Serial.print("Wifi state changed to ");
+        Serial.println(wifiConnected);
+    }
+}
+
 void loop()
 {
 #ifdef ARDUINO_OTA_UPDATE
@@ -506,7 +534,7 @@ void loop()
     {
         ArduinoOTA.handle();
     }
-    else if (WiFi.status() == WL_CONNECTED)
+    else if (wifiConnected)
     {
         //wifi but OTA not initialized
         setupOTA();
@@ -526,6 +554,7 @@ void loop()
         }
     }
 
+    Update_WiFi_State();
 
     if (digitalRead(TP_PIN_PIN) == HIGH) 
     {
@@ -599,6 +628,14 @@ void loop()
                 orig_mm = 99;
             }
         }
+        else
+        {
+            //it's been 30 seconds since the button was pressed, go to sleep
+            if (millis() - pressedTime > 30000)
+            {
+                Go_To_Sleep();
+            }
+        }
         pressed = false;
     }
 
@@ -619,5 +656,18 @@ void loop()
         break;
     default:
         break;
+    }
+
+    //Initialize items that do not need to be set up before first loop
+    //Allows setup to be quicker
+    if (!delayedSetup) 
+    {
+        delayedSetup = true;
+        uint32_t start = millis();
+
+        setupMPU9250(); //Start IMU
+
+        Serial.print("DelayedSetup took ");
+        Serial.println(millis()-start);
     }
 }
